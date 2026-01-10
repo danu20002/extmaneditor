@@ -11,9 +11,33 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--page-bg);
+  color: var(--text-color);
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
+}
+
+:root {
+  /* Monochrome theme variables */
+  --page-bg: #f6f7f9; /* subtle off-white page background */
+  --page-foreground: #000000;
+  --card-bg: #ffffff;
+  --header-bg: #0b0b0b;
+  --text-color: #0b0b0b;
+  --muted: #6b7280; /* slightly bluish gray for better legibility */
+  --border: #e6e8eb; /* light neutral border */
+  --surface-1: #ffffff;
+  --accent: #111827; /* dark accent for controls */
+  --editor-bg: #ffffff;
+  --inverse-bg: #111827;
+  --toolbar-bg: #ffffff;
+  --button-bg: #ffffff;
+}
+
+/* Accessible link/button defaults */
+a, button, input, select, textarea {
+  color: var(--text-color);
 }
