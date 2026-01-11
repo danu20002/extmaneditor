@@ -2,7 +2,13 @@ import { useState, useRef, useEffect } from 'react';
 import LinkModal from './LinkModal';
 import '../styles/RichTextEditor.css';
 
-const RichTextEditor = () => {
+// Props:
+// - width: string (e.g. '800px' or '100%') sets page card width
+// - height: string (e.g. '1123px') sets min-height for the page body
+// - fullBleed: boolean — when true, removes left/right gutters so page sits edge-to-edge
+// - onComponentDrop: function(info) called when something is dropped onto the editor
+const RichTextEditor = ({ width = null, height = null, fullBleed = true, onComponentDrop = null }) => {
+  const [showDropOverlay, setShowDropOverlay] = useState(false);
   const [content, setContent] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHtmlModal, setShowHtmlModal] = useState(false);
@@ -30,25 +36,7 @@ const RichTextEditor = () => {
     insertUnorderedList: false,
     insertOrderedList: false
   });
-  const editorRef = useRef(null);
-  const savedRangeRef = useRef(null);
-  const lastTableCellRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const imageInputRef = useRef(null);
-  const editingAnchorRef = useRef(null);
 
-  const execCommand = (command, value = null) => {
-    document.execCommand(command, false, value);
-    editorRef.current?.focus();
-    updateActiveFormats();
-  };
-
-  const handleInput = () => {
-    setContent(editorRef.current?.innerHTML || '');
-    updateActiveFormats();
-  };
-
-  // Update active formats based on current selection
   const updateActiveFormats = () => {
     try {
       const newFormats = {
@@ -63,9 +51,155 @@ const RichTextEditor = () => {
         insertOrderedList: document.queryCommandState('insertOrderedList')
       };
       setActiveFormats(newFormats);
+
+      // also update font/select boxes based on selection
+      try {
+        const sel = window.getSelection();
+        const node = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) : null;
+        // font name
+        let fontName = '';
+        try { fontName = (document.queryCommandValue && document.queryCommandValue('fontName')) || ''; } catch { fontName = ''; }
+        if (!fontName && node) {
+          const ff = window.getComputedStyle(node).fontFamily || '';
+          fontName = ff.split(',')[0].replace(/["']/g, '').trim();
+        }
+        if (fontName) {
+          fontName = String(fontName).replace(/^[<>"']+|[<>"']+$/g, '').split(',')[0].trim();
+          setSelectedFont(fontName);
+          setFontOptions((prev) => prev.includes(fontName) ? prev : [fontName, ...prev]);
+        }
+
+        // font size (queryCommandValue returns 1-7 for legacy command)
+        let fsize = '';
+        try { fsize = document.queryCommandValue('fontSize') || ''; } catch { fsize = ''; }
+        if (!fsize && node) {
+          // fallback: map computed px to closest legacy size - keep default '3'
+          const px = parseFloat(window.getComputedStyle(node).fontSize || '16');
+          if (px < 12) fsize = '1';
+          else if (px < 16) fsize = '2';
+          else if (px < 18) fsize = '3';
+          else if (px < 22) fsize = '4';
+          else if (px < 26) fsize = '5';
+          else if (px < 32) fsize = '6';
+          else fsize = '7';
+        }
+        if (fsize) setSelectedFontSize(String(fsize));
+
+        // block format (p, h1..h6, blockquote)
+        let fmt = '';
+        try { fmt = (document.queryCommandValue && document.queryCommandValue('formatBlock')) || ''; } catch { fmt = ''; }
+        if (!fmt && node) {
+          let el = node;
+          while (el && el !== editorRef.current) {
+            if (el.tagName && /H[1-6]|P|BLOCKQUOTE|DIV/.test(el.tagName)) { fmt = el.tagName.toLowerCase(); break; }
+            el = el.parentElement;
+          }
+        }
+        if (fmt) {
+          fmt = String(fmt).replace(/[<>]/g, '').toLowerCase();
+          if (!/^(p|h[1-6]|blockquote)$/.test(fmt)) fmt = 'p';
+          setSelectedFormat(fmt);
+        }
+      } catch { /* ignore */ }
     } catch {
       // Ignore errors
     }
+  };
+  
+  const [selectedFont, setSelectedFont] = useState('Arial');
+  const [selectedFontSize, setSelectedFontSize] = useState('3');
+  const [selectedFormat, setSelectedFormat] = useState('p');
+  const [_fontOptions, setFontOptions] = useState([
+    'Arial','Helvetica','Segoe UI','Roboto','Open Sans','Lato','Montserrat','Source Sans Pro','Tahoma','Verdana','Trebuchet MS','Georgia','Times New Roman','Palatino Linotype','Garamond','Courier New','Brush Script MT','Impact','Comic Sans MS','Candara','Cambria','Calibri','Merriweather','Noto Sans','Palatino','Bookman','Lucida Sans','Righteous','Poppins'
+  ]);
+
+  // refs used throughout the editor
+  const editorRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const savedRangeRef = useRef(null);
+  const editingAnchorRef = useRef(null);
+  const lastTableCellRef = useRef(null);
+  const imageInputRef = useRef(null);
+
+  // Helper function to execute document commands
+  const execCommand = (command, value = null) => {
+    try {
+      document.execCommand(command, false, value);
+    } catch (err) {
+      console.error('execCommand failed:', err);
+    }
+  };
+
+  // Handle input changes in the editor
+  const handleInput = () => {
+    if (editorRef.current) {
+      setContent(editorRef.current.innerHTML);
+      updateActiveFormats();
+    }
+  };
+
+  // Drag & Drop handlers to accept HTML/text/files/components from host app
+  const onDragOver = (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+    setShowDropOverlay(true);
+  };
+
+  const onDragLeave = (ev) => {
+    setShowDropOverlay(false);
+  };
+
+  const onDrop = async (ev) => {
+    ev.preventDefault();
+    setShowDropOverlay(false);
+    const dt = ev.dataTransfer;
+    const info = { html: null, text: null, files: [], types: Array.from(dt.types || []) };
+
+    try {
+      // files (images etc.)
+      if (dt.files && dt.files.length > 0) {
+        for (let i = 0; i < dt.files.length; i++) info.files.push(dt.files[i]);
+      }
+
+      // prefer HTML if provided
+      try { info.html = dt.getData('text/html') || null; } catch { info.html = null; }
+      try { info.text = dt.getData('text/plain') || null; } catch { info.text = null; }
+    } catch (e) {
+      // ignore
+    }
+
+    // If HTML present, insert it at the caret
+    try {
+      if (info.html) {
+        if (editorRef.current) {
+          editorRef.current.focus();
+          execCommand('insertHTML', info.html);
+        }
+      } else if (info.text) {
+        if (editorRef.current) {
+          editorRef.current.focus();
+          execCommand('insertText', info.text);
+        }
+      }
+
+      // handle files (images) — if files are images, convert to data URLs and insert
+      if (info.files.length > 0) {
+        for (const f of info.files) {
+          if (f.type && f.type.startsWith('image/')) {
+            const reader = new FileReader();
+            reader.onload = (ev2) => insertEnhancedImage(ev2.target.result);
+            reader.readAsDataURL(f);
+          }
+        }
+      }
+    } catch (e) {
+      // ignore insert errors
+    }
+
+    // call external callback so host app can react to drop
+    try {
+      if (typeof onComponentDrop === 'function') onComponentDrop(info, ev);
+    } catch (e) { /* ignore */ }
   };
 
   // Listen for selection changes
@@ -188,11 +322,15 @@ const RichTextEditor = () => {
   };
 
   const changeFontSize = (e) => {
-    execCommand('fontSize', e.target.value);
+    const v = e && e.target ? e.target.value : e;
+    execCommand('fontSize', v);
+    setSelectedFontSize(String(v));
   };
 
   const changeFontFamily = (e) => {
-    execCommand('fontName', e.target.value);
+    const v = e && e.target ? e.target.value : e;
+    execCommand('fontName', v);
+    setSelectedFont(String(v));
   };
 
   const insertImage = () => {
@@ -421,6 +559,7 @@ const RichTextEditor = () => {
 
   const formatBlock = (tag) => {
     execCommand('formatBlock', tag);
+    setSelectedFormat(tag);
   };
 
   const insertTable = (rowsParam, colsParam) => {
@@ -593,12 +732,30 @@ const RichTextEditor = () => {
     table.parentNode.insertBefore(wrapper, table);
     wrapper.appendChild(table);
 
-    // track last clicked cell
+    // track last clicked cell and apply selection styling
     const onCellClick = (ev) => {
       const cell = ev.target.closest('td,th');
-      if (cell) {
+      if (!cell) return;
+
+      // If shift is held and we have a previous selection, select rectangular range
+      if (ev.shiftKey && lastTableCellRef.current && lastTableCellRef.current !== cell) {
+        try {
+          // clear previous selection
+          const prev = editorRef.current.querySelectorAll('.selected-cell');
+          prev.forEach(p => p.classList.remove('selected-cell'));
+        } catch { /* ignore clear selection errors */ }
+        selectRect(lastTableCellRef.current, cell, table);
         lastTableCellRef.current = cell;
+        return;
       }
+
+      // normal click: clear previous selection and mark this cell
+      try {
+        const prev = editorRef.current.querySelectorAll('.selected-cell');
+        prev.forEach(p => p.classList.remove('selected-cell'));
+      } catch { /* ignore */ }
+      cell.classList.add('selected-cell');
+      lastTableCellRef.current = cell;
     };
 
     // select table on click
@@ -613,6 +770,11 @@ const RichTextEditor = () => {
     };
 
     table.addEventListener('click', onTableClick);
+    // attach cell click listeners to set selection
+    try {
+      const allCells = table.querySelectorAll('td,th');
+      allCells.forEach(c => c.addEventListener('click', onCellClick));
+    } catch { /* ignore */ }
 
     // create floating toolbar
     const controls = document.createElement('div');
@@ -647,6 +809,244 @@ const RichTextEditor = () => {
         if (lastTableCellRef.current) lastTableCellRef.current.style.background = c;
       } catch { /* ignore */ }
     });
+    // header color picker (hidden) - applies to header row (thead or first row)
+    const headerColorInput = document.createElement('input');
+    headerColorInput.type = 'color';
+    headerColorInput.style.display = 'none';
+    headerColorInput.addEventListener('input', (ev) => {
+      try {
+        const c = ev.target.value;
+        // find header cells
+        let headerCells = [];
+        const thead = table.querySelector('thead');
+        if (thead) headerCells = Array.from(thead.querySelectorAll('th'));
+        else if (table.rows && table.rows[0]) headerCells = Array.from(table.rows[0].cells);
+        headerCells.forEach(h => { h.style.background = c; h.style.color = getContrastColor(c); });
+      } catch { /* ignore */ }
+    });
+
+    const clearHeaderColor = () => {
+      try {
+        const thead = table.querySelector('thead');
+        const headerCells = thead ? Array.from(thead.querySelectorAll('th')) : (table.rows[0] ? Array.from(table.rows[0].cells) : []);
+        headerCells.forEach(h => { h.style.background = ''; h.style.color = ''; });
+      } catch { /* ignore */ }
+    };
+
+    // contrast helper to pick white/black text on header
+    const getContrastColor = (hex) => {
+      if (!hex) return '#000';
+      const c = hex.replace('#','');
+      const r = parseInt(c.substr(0,2),16);
+      const g = parseInt(c.substr(2,2),16);
+      const b = parseInt(c.substr(4,2),16);
+      const yiq = ((r*299)+(g*587)+(b*114))/1000;
+      return yiq >= 128 ? '#000' : '#fff';
+    };
+
+    // helper: build matrix of table cells (accounts for rowspan/colspan)
+    const buildTableMatrix = (tbl) => {
+      const matrix = [];
+      for (let r = 0; r < tbl.rows.length; r++) {
+        const row = tbl.rows[r];
+        matrix[r] = matrix[r] || [];
+        let colIndex = 0;
+        for (let ci = 0; ci < row.cells.length; ci++) {
+          const cell = row.cells[ci];
+          // find next free column
+          while (matrix[r][colIndex]) colIndex++;
+          const rs = parseInt(cell.getAttribute('rowspan') || cell.rowSpan || 1, 10);
+          const cs = parseInt(cell.getAttribute('colspan') || cell.colSpan || 1, 10);
+          for (let rr = 0; rr < rs; rr++) {
+            for (let cc = 0; cc < cs; cc++) {
+              matrix[r + rr] = matrix[r + rr] || [];
+              matrix[r + rr][colIndex + cc] = cell;
+            }
+          }
+          colIndex += cs;
+        }
+      }
+      return matrix;
+    };
+
+    const findCellCoords = (tbl, cell) => {
+      const matrix = buildTableMatrix(tbl);
+      for (let r = 0; r < matrix.length; r++) {
+        const row = matrix[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          if (row[c] === cell) return { r, c, matrix };
+        }
+      }
+      return null;
+    };
+
+    const mergeCellsSet = (tbl, cellsSet) => {
+      // compute bounding box in matrix coordinates
+      const matrix = buildTableMatrix(tbl);
+      let minR = Infinity, minC = Infinity, maxR = -Infinity, maxC = -Infinity;
+      const unique = new Set(cellsSet);
+      for (let r = 0; r < matrix.length; r++) {
+        for (let c = 0; c < (matrix[r] || []).length; c++) {
+          const cell = matrix[r][c];
+          if (!cell || !unique.has(cell)) continue;
+          minR = Math.min(minR, r);
+          minC = Math.min(minC, c);
+          maxR = Math.max(maxR, r);
+          maxC = Math.max(maxC, c);
+        }
+      }
+      if (minR === Infinity) return;
+      const anchor = matrix[minR][minC];
+      // collect unique cells in box
+      const toRemove = new Set();
+      let mergedHtml = '';
+      for (let r = minR; r <= maxR; r++) {
+        for (let c = minC; c <= maxC; c++) {
+          const cell = matrix[r][c];
+          if (!cell) continue;
+          if (cell !== anchor) toRemove.add(cell);
+          if (!mergedHtml.includes(cell.innerHTML)) mergedHtml += (mergedHtml ? '<br/>' : '') + cell.innerHTML;
+        }
+      }
+      const newRowSpan = maxR - minR + 1;
+      const newColSpan = maxC - minC + 1;
+      try {
+        anchor.rowSpan = newRowSpan;
+        anchor.colSpan = newColSpan;
+        anchor.innerHTML = mergedHtml;
+      } catch { /* ignore */ }
+      // remove other cells (unique DOM nodes)
+      toRemove.forEach(c => {
+        try { c.remove(); } catch { /* ignore */ }
+      });
+      // cleanup selection
+      try { anchor.classList.add('selected-cell'); lastTableCellRef.current = anchor; } catch { /* ignore selection errors */ }
+    };
+
+    const mergeNeighbor = (cell, dir, tbl) => {
+      const pos = findCellCoords(tbl, cell);
+      if (!pos) return;
+      const { r, c, matrix } = pos;
+      const rs = parseInt(cell.getAttribute('rowspan') || cell.rowSpan || 1, 10);
+      const cs = parseInt(cell.getAttribute('colspan') || cell.colSpan || 1, 10);
+      let nr = r, nc = c;
+      if (dir === 'right') nc = c + cs;
+      if (dir === 'left') nc = c - 1;
+      if (dir === 'down') nr = r + rs;
+      if (dir === 'up') nr = r - 1;
+      if (!matrix[nr] || typeof matrix[nr][nc] === 'undefined') return;
+      const neighbor = matrix[nr][nc];
+      if (!neighbor || neighbor === cell) return;
+      // collect all cells within bounding rect between cell and neighbor
+      const minR = Math.min(r, nr);
+      const maxR = Math.max(r, nr + (parseInt(neighbor.getAttribute('rowspan') || neighbor.rowSpan || 1,10) -1));
+      const minC = Math.min(c, nc);
+      const maxC = Math.max(c + (cs -1), nc + (parseInt(neighbor.getAttribute('colspan') || neighbor.colSpan || 1,10) -1));
+      const cellsToMerge = new Set();
+      for (let rr = minR; rr <= maxR; rr++) {
+        for (let cc = minC; cc <= maxC; cc++) {
+          const ch = matrix[rr] && matrix[rr][cc];
+          if (ch) cellsToMerge.add(ch);
+        }
+      }
+      mergeCellsSet(tbl, cellsToMerge);
+    };
+
+    const splitCellImpl = (cell, type, tbl) => {
+      try {
+        if (type === 'vertical') {
+          const rs = parseInt(cell.getAttribute('rowspan') || cell.rowSpan || 1, 10);
+          if (rs <= 1) return;
+          const pos = findCellCoords(tbl, cell);
+          if (!pos) return;
+          const { r, c } = pos;
+          // reduce rowspan and insert empty cells below at same column positions
+          cell.rowSpan = 1;
+          for (let i = 1; i < rs; i++) {
+            const targetRow = tbl.rows[r + i];
+            if (targetRow) {
+              const idx = (() => {
+                // compute insertion index by counting cells until we reach column c
+                let col = 0; for (let ci = 0; ci < targetRow.cells.length; ci++) { const cc = targetRow.cells[ci]; const span = parseInt(cc.getAttribute('colspan') || cc.colSpan || 1,10); if (col >= c) return ci; col += span; } return targetRow.cells.length;
+              })();
+              const newCell = targetRow.insertCell(idx);
+              newCell.innerHTML = '';
+            }
+          }
+        } else if (type === 'horizontal') {
+          const cs = parseInt(cell.getAttribute('colspan') || cell.colSpan || 1, 10);
+          if (cs <= 1) return;
+          const row = cell.parentElement;
+          const idx = Array.prototype.indexOf.call(row.children, cell);
+          cell.colSpan = 1;
+          for (let k = 1; k < cs; k++) {
+            const newCell = row.insertCell(idx + k);
+            newCell.innerHTML = '';
+          }
+        }
+      } catch { /* ignore */ }
+    };
+
+    // selection helpers
+    const selectRow = (cell, tbl) => {
+      const pos = findCellCoords(tbl, cell);
+      if (!pos) return;
+      const { r, matrix } = pos;
+      try {
+        const prev = editorRef.current.querySelectorAll('.selected-cell');
+        prev.forEach(p => p.classList.remove('selected-cell'));
+      } catch { /* ignore clear selection errors */ }
+      for (let c = 0; c < (matrix[r] || []).length; c++) {
+        const ch = matrix[r][c];
+        if (ch) ch.classList.add('selected-cell');
+      }
+    };
+
+    const selectColumn = (cell, tbl) => {
+      const pos = findCellCoords(tbl, cell);
+      if (!pos) return;
+      const { c, matrix } = pos;
+      try {
+        const prev = editorRef.current.querySelectorAll('.selected-cell');
+        prev.forEach(p => p.classList.remove('selected-cell'));
+      } catch { /* ignore clear selection errors */ }
+      for (let r = 0; r < matrix.length; r++) {
+        const ch = matrix[r] && matrix[r][c];
+        if (ch) ch.classList.add('selected-cell');
+      }
+    };
+
+    const selectTable = (tbl) => {
+      try {
+        const prev = editorRef.current.querySelectorAll('.selected-cell');
+        prev.forEach(p => p.classList.remove('selected-cell'));
+      } catch { /* ignore clear selection errors */ }
+      try {
+        const all = tbl.querySelectorAll('td,th');
+        all.forEach(a => a.classList.add('selected-cell'));
+      } catch { /* ignore select all errors */ }
+    };
+
+    const selectRect = (cellA, cellB, tbl) => {
+      const aPos = findCellCoords(tbl, cellA);
+      const bPos = findCellCoords(tbl, cellB);
+      if (!aPos || !bPos) return;
+      const minR = Math.min(aPos.r, bPos.r);
+      const maxR = Math.max(aPos.r, bPos.r);
+      const minC = Math.min(aPos.c, bPos.c);
+      const maxC = Math.max(aPos.c, bPos.c);
+      try {
+        const prev = editorRef.current.querySelectorAll('.selected-cell');
+        prev.forEach(p => p.classList.remove('selected-cell'));
+      } catch { /* ignore clear selection errors */ }
+      const matrix = aPos.matrix;
+      for (let rr = minR; rr <= maxR; rr++) {
+        for (let cc = minC; cc <= maxC; cc++) {
+          const ch = matrix[rr] && matrix[rr][cc];
+          if (ch) ch.classList.add('selected-cell');
+        }
+      }
+    };
     controls.appendChild(colorInput);
 
     controls.appendChild(makeBtn('Cell Color', '■', () => {
@@ -657,6 +1057,33 @@ const RichTextEditor = () => {
       }
       colorInput.click();
     }));
+
+    // header color controls
+    controls.appendChild(headerColorInput);
+    controls.appendChild(makeBtn('Header Color', '🎨', () => {
+      // ensure header exists (convert first row if necessary)
+      try {
+        const firstRow = table.rows[0];
+        if (!firstRow) return alert('Table has no rows');
+        const isHeader = firstRow.cells[0] && firstRow.cells[0].tagName.toLowerCase() === 'th';
+        if (!isHeader) {
+          // convert first row to thead/th
+          const thead = document.createElement('thead');
+          const tr = table.rows[0];
+          const newTr = document.createElement('tr');
+          for (let c = 0; c < tr.cells.length; c++) {
+            const th = document.createElement('th');
+            th.innerHTML = tr.cells[c].innerHTML;
+            newTr.appendChild(th);
+          }
+          thead.appendChild(newTr);
+          table.deleteRow(0);
+          table.insertBefore(thead, table.firstChild);
+        }
+      } catch { /* ignore */ }
+      headerColorInput.click();
+    }));
+    controls.appendChild(makeBtn('Clear Header Color', '✖', () => { clearHeaderColor(); }));
 
     controls.appendChild(makeBtn('Toggle Header', 'H', () => {
       try {
@@ -714,6 +1141,194 @@ const RichTextEditor = () => {
         startTableResize(e, wrapper, table, pos);
       });
       wrapper.appendChild(handle);
+    });
+
+    // add drag handle for moving table
+    const dragHandle = document.createElement('div');
+    dragHandle.className = 'table-drag-handle';
+    dragHandle.title = 'Drag to move table';
+    wrapper.appendChild(dragHandle);
+
+    // create context menu (popover) for advanced table ops
+    const menu = document.createElement('div');
+    menu.className = 'table-context-menu';
+    menu.innerHTML = `
+      <button type="button" data-action="select-row">Select row</button>
+      <button type="button" data-action="select-column">Select column</button>
+      <button type="button" data-action="select-table">Select table</button>
+      <hr/>
+      <button type="button" data-action="merge-up">Merge cell up</button>
+      <button type="button" data-action="merge-right">Merge cell right</button>
+      <button type="button" data-action="merge-down">Merge cell down</button>
+      <button type="button" data-action="merge-left">Merge cell left</button>
+      <hr/>
+      <button type="button" data-action="split-vertical">Split cell vertically</button>
+      <button type="button" data-action="split-horizontal">Split cell horizontally</button>
+      <hr/>
+      <button type="button" data-action="add-row">Add row below</button>
+      <button type="button" data-action="add-col">Add column right</button>
+      <button type="button" data-action="delete-table">Delete table</button>
+    `;
+    menu.style.display = 'none';
+    wrapper.appendChild(menu);
+
+    // show/hide menu helper
+    const toggleMenu = (show, x, y) => {
+      if (show) {
+        menu.style.display = 'block';
+        menu.style.left = (typeof x === 'number' ? x + 'px' : '8px');
+        menu.style.top = (typeof y === 'number' ? y + 'px' : '36px');
+      } else {
+        menu.style.display = 'none';
+      }
+    };
+
+    // menu action handler
+    menu.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const act = btn.getAttribute('data-action');
+      try {
+        const cell = lastTableCellRef.current || table.rows[0].cells[0];
+        if (!cell) return;
+        if (act === 'select-row') selectRow(cell, table);
+        if (act === 'select-column') selectColumn(cell, table);
+        if (act === 'select-table') selectTable(table);
+        if (act === 'merge-right') mergeNeighbor(cell, 'right', table);
+        if (act === 'merge-left') mergeNeighbor(cell, 'left', table);
+        if (act === 'merge-up') mergeNeighbor(cell, 'up', table);
+        if (act === 'merge-down') mergeNeighbor(cell, 'down', table);
+        if (act === 'split-vertical') splitCellImpl(cell, 'vertical', table);
+        if (act === 'split-horizontal') splitCellImpl(cell, 'horizontal', table);
+        if (act === 'add-row') addRowAfter(table);
+        if (act === 'add-col') addColAfter(table);
+        if (act === 'delete-table') deleteTable(table);
+      } catch { /* ignore */ }
+      toggleMenu(false);
+    });
+
+    // open menu from controls
+    const menuBtn = makeBtn('Table Menu', '&#8942;', () => {
+      // position menu near button
+      toggleMenu(menu.style.display !== 'block');
+    });
+    menuBtn.className += ' table-menu-btn';
+    controls.appendChild(menuBtn);
+
+    // click on wrapper opens the menu near cursor on right-click
+    wrapper.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      savedRangeRef.current = null; // keep selection safe
+      lastTableCellRef.current = ev.target.closest('td,th') || lastTableCellRef.current;
+      const rect = wrapper.getBoundingClientRect();
+      toggleMenu(true, ev.clientX - rect.left, ev.clientY - rect.top);
+    });
+
+    // close menu on outside clicks
+    document.addEventListener('click', (ev) => {
+      if (!wrapper.contains(ev.target)) toggleMenu(false);
+    });
+
+    // Basic merge/split implementations
+    const _mergeCell = (cell, dir, tbl) => {
+      try {
+        const rowIndex = cell.parentElement.rowIndex;
+        const colIndex = Array.prototype.indexOf.call(cell.parentElement.children, cell);
+        if (dir === 'right') {
+          const target = tbl.rows[rowIndex] && tbl.rows[rowIndex].cells[colIndex + 1];
+          if (!target) return;
+          cell.colSpan = (cell.colSpan || 1) + (target.colSpan || 1);
+          cell.innerHTML = (cell.innerHTML || '') + '<br/>' + (target.innerHTML || '');
+          target.remove();
+        } else if (dir === 'left') {
+          const target = tbl.rows[rowIndex] && tbl.rows[rowIndex].cells[colIndex - 1];
+          if (!target) return;
+          target.colSpan = (target.colSpan || 1) + (cell.colSpan || 1);
+          target.innerHTML = (target.innerHTML || '') + '<br/>' + (cell.innerHTML || '');
+          cell.remove();
+        } else if (dir === 'down') {
+          const nextRow = tbl.rows[rowIndex + 1];
+          if (!nextRow) return;
+          const target = nextRow.cells[colIndex];
+          if (!target) return;
+          cell.rowSpan = (cell.rowSpan || 1) + (target.rowSpan || 1);
+          cell.innerHTML = (cell.innerHTML || '') + '<br/>' + (target.innerHTML || '');
+          target.remove();
+        } else if (dir === 'up') {
+          const prevRow = tbl.rows[rowIndex - 1];
+          if (!prevRow) return;
+          const target = prevRow.cells[colIndex];
+          if (!target) return;
+          target.rowSpan = (target.rowSpan || 1) + (cell.rowSpan || 1);
+          target.innerHTML = (target.innerHTML || '') + '<br/>' + (cell.innerHTML || '');
+          cell.remove();
+        }
+      } catch { /* ignore */ }
+    };
+
+    const _splitCell = (cell, type, tbl) => {
+      try {
+        if (type === 'vertical') {
+          const span = cell.rowSpan || 1;
+          if (span <= 1) return;
+          // reduce rowspan and insert new cells below
+          cell.rowSpan = 1;
+          const rowIndex = cell.parentElement.rowIndex;
+          for (let r = 1; r < span; r++) {
+            const targetRow = tbl.rows[rowIndex + r];
+            if (targetRow) {
+              const newCell = targetRow.insertCell(Array.prototype.indexOf.call(cell.parentElement.children, cell));
+              newCell.innerHTML = '';
+            }
+          }
+        } else if (type === 'horizontal') {
+          const span = cell.colSpan || 1;
+          if (span <= 1) return;
+          cell.colSpan = 1;
+          const row = cell.parentElement;
+          const idx = Array.prototype.indexOf.call(row.children, cell);
+          for (let c = 1; c < span; c++) {
+            const newCell = row.insertCell(idx + c);
+            newCell.innerHTML = '';
+          }
+        }
+      } catch { /* ignore */ }
+    };
+
+    // Basic drag-to-move implementation
+    let dragging = false;
+    let dragStart = null;
+    const onDragMouseMove = (ev) => {
+      if (!dragging) return;
+      const dx = ev.clientX - dragStart.x;
+      const dy = ev.clientY - dragStart.y;
+      wrapper.style.transform = `translate(${dragStart.tx + dx}px, ${dragStart.ty + dy}px)`;
+    };
+    const onDragMouseUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener('mousemove', onDragMouseMove);
+      document.removeEventListener('mouseup', onDragMouseUp);
+      // commit position by setting left/top and clearing transform
+      const matrix = wrapper.style.transform.match(/translate\((-?\d+)px,\s*(-?\d+)px\)/);
+      if (matrix) {
+        const nx = parseInt(matrix[1], 10);
+        const ny = parseInt(matrix[2], 10);
+        wrapper.style.left = (wrapper.offsetLeft + nx) + 'px';
+        wrapper.style.top = (wrapper.offsetTop + ny) + 'px';
+        wrapper.style.transform = '';
+        wrapper.style.position = 'absolute';
+      }
+    };
+
+    dragHandle.addEventListener('mousedown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      dragging = true;
+      dragStart = { x: ev.clientX, y: ev.clientY, tx: 0, ty: 0 };
+      document.addEventListener('mousemove', onDragMouseMove);
+      document.addEventListener('mouseup', onDragMouseUp);
     });
 
     table.dataset.enhanced = '1';
@@ -921,8 +1536,10 @@ const RichTextEditor = () => {
 
   const clearEditor = () => {
     if (confirm('Are you sure you want to clear all content?')) {
+      // Clear content by setting innerHTML through execCommand
       if (editorRef.current) {
-        editorRef.current.innerHTML = '';
+        execCommand('selectAll');
+        execCommand('delete');
         setContent('');
       }
     }
@@ -940,14 +1557,13 @@ const RichTextEditor = () => {
     execCommand('formatBlock', 'blockquote');
   };
 
-  useEffect(() => {
-    if (editorRef.current) {
-      editorRef.current.innerHTML = '';
-    }
-  }, []);
-
   return (
-    <div className={`editor-container ${isFullscreen ? 'fullscreen' : ''}`}>
+    <div
+      className={`editor-container ${isFullscreen ? 'fullscreen' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -956,8 +1572,11 @@ const RichTextEditor = () => {
         style={{ display: 'none' }}
       />
 
-      <div className="editor-content">
-        <div className={`page-card size-${pageSize}`}>
+      <div className={`editor-content ${fullBleed ? 'full-bleed' : ''}`}>
+        <div
+          className={`page-card size-${pageSize} ${fullBleed ? 'no-gutters' : ''}`}
+          style={{ width: width || undefined }}
+        >
           
           <div className="editor-toolbar">
         {/* Undo/Redo Group */}
@@ -991,19 +1610,43 @@ const RichTextEditor = () => {
           <select
             className="toolbar-select"
             onChange={changeFontFamily}
-            defaultValue="Arial"
+            value={selectedFont}
           >
             <option value="Arial">Arial</option>
+            <option value="Helvetica">Helvetica</option>
+            <option value="Segoe UI">Segoe UI</option>
+            <option value="Roboto">Roboto</option>
+            <option value="Open Sans">Open Sans</option>
+            <option value="Lato">Lato</option>
+            <option value="Montserrat">Montserrat</option>
+            <option value="Source Sans Pro">Source Sans Pro</option>
+            <option value="Tahoma">Tahoma</option>
+            <option value="Verdana">Verdana</option>
+            <option value="Trebuchet MS">Trebuchet MS</option>
             <option value="Georgia">Georgia</option>
             <option value="Times New Roman">Times New Roman</option>
+            <option value="Palatino Linotype">Palatino Linotype</option>
+            <option value="Garamond">Garamond</option>
             <option value="Courier New">Courier New</option>
-            <option value="Verdana">Verdana</option>
+            <option value="Brush Script MT">Brush Script MT</option>
+            <option value="Impact">Impact</option>
+            <option value="Comic Sans MS">Comic Sans MS</option>
+            <option value="Candara">Candara</option>
+            <option value="Cambria">Cambria</option>
+            <option value="Calibri">Calibri</option>
+            <option value="Merriweather">Merriweather</option>
+            <option value="Noto Sans">Noto Sans</option>
+            <option value="Palatino">Palatino</option>
+            <option value="Bookman">Bookman</option>
+            <option value="Lucida Sans">Lucida Sans</option>
+            <option value="Righteous">Righteous</option>
+            <option value="Poppins">Poppins</option>
           </select>
 
           <select
             className="toolbar-select"
             onChange={changeFontSize}
-            defaultValue="3"
+            value={selectedFontSize}
           >
             <option value="1">Small</option>
             <option value="3">Normal</option>
@@ -1013,8 +1656,8 @@ const RichTextEditor = () => {
 
           <select
             className="toolbar-select"
-            onChange={(e) => formatBlock(e.target.value)}
-            defaultValue="p"
+            onChange={(e) => { formatBlock(e.target.value); setSelectedFormat(e.target.value); }}
+            value={selectedFormat}
           >
             <option value="p">Paragraph</option>
             <option value="h1">Heading 1</option>
@@ -1271,9 +1914,31 @@ const RichTextEditor = () => {
             title="Page size"
             aria-label="Page size"
           >
-            <option value="a4">A4</option>
-            <option value="letter">Letter</option>
+            <option value="a0">A0</option>
+            <option value="a1">A1</option>
+            <option value="a2">A2</option>
             <option value="a3">A3</option>
+            <option value="a4">A4</option>
+            <option value="a5">A5</option>
+            <option value="a6">A6</option>
+            <option value="b0">B0</option>
+            <option value="b1">B1</option>
+            <option value="b2">B2</option>
+            <option value="b3">B3</option>
+            <option value="b4">B4</option>
+            <option value="b5">B5</option>
+            <option value="letter">Letter</option>
+            <option value="legal">Legal</option>
+            <option value="ledger">Ledger</option>
+            <option value="tabloid">Tabloid</option>
+            <option value="executive">Executive</option>
+            <option value="statement">Statement</option>
+            <option value="folio">Folio</option>
+            <option value="c4">C4</option>
+            <option value="c5">C5</option>
+            <option value="monarch">Monarch</option>
+            <option value="dl-envelope">Envelope DL</option>
+            <option value="c6-envelope">Envelope C6</option>
             <option value="custom">Custom</option>
           </select>
           <button className="toolbar-btn" onClick={() => fileInputRef.current?.click()} title="Import">
@@ -1336,15 +2001,18 @@ const RichTextEditor = () => {
             contentEditable
             onInput={handleInput}
             suppressContentEditableWarning
+            data-placeholder="Start typing your content here..."
+            style={{ minHeight: height || undefined }}
           />
         </div>
       </div>
 
-      <div className="status-bar-bottom">
-        <span className="status-item">Characters: {content.replace(/<[^>]*>/g, '').length}</span>
-        <span className="status-item">•</span>
-        <span className="status-item">Words: {content.replace(/<[^>]*>/g, '').trim().split(/\s+/).filter(w => w).length}</span>
-      </div>
+      {/* Drop overlay shown while dragging over the editor */}
+      {showDropOverlay && (
+        <div className="rte-drop-overlay">Drop to insert into editor</div>
+      )}
+
+      {/* status bar removed - package publishes only toolbar + page */}
 
       {/* Table Modal */}
       {showTableModal && (

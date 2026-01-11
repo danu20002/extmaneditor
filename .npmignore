@@ -1,0 +1,49 @@
+# Source files
+src/
+public/
+index.html
+main.jsx
+
+# Build artifacts to exclude
+dist/vite.svg
+
+# Development files
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node modules
+node_modules/
+
+# Build artifacts (keep dist only)
+*.local
+
+# Editor directories and files
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Configuration files
+vite.config.js
+eslint.config.js
+.gitignore
+.git/
+
+# Test files
+test/
+tests/
+*.test.js
+*.test.jsx
+*.spec.js
+*.spec.jsx
+
+# Documentation (except README)
+docs/

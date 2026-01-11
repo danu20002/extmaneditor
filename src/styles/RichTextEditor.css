@@ -6,12 +6,6 @@
   box-sizing: border-box;
 }
 
-/* Keep the page itself from scrolling; make the editor content the only scroll container */
-html, body {
-  height: 100%;
-  overflow: hidden;
-}
-
 /* Layout variables for header/toolbar separation */
 :root {
   --toolbar-height: 64px;
@@ -25,11 +19,12 @@ html, body {
   width: 100%;
   max-width: 100%;
   margin: 0;
-  height: 100vh;
+  min-height: 600px;
+  height: auto;
   background: #f8f9fa;
   border-radius: 0;
   box-shadow: none;
-  overflow: hidden; /* prevent main page scrolling */
+  overflow: visible;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   display: block;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -275,28 +270,26 @@ html, body {
 
 /* Editor content - becomes the scroll container inside the viewport */
 .editor-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #f8f9fa;
+  padding: 24px;
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 50px;
-  padding: 0 0 24px 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  background: transparent;
-  color: var(--text-color);
-  font-size: 17px;
-  line-height: 1.8;
+  width: 100%;
+}
+
+/* When embedded as full-bleed, stretch the page to fill container (no side gutters) */
+.editor-content.full-bleed {
+  justify-content: flex-start;
+  padding: 12px 8px;
 }
 
 /* The page card inside editor-content */
 .page-card {
-  max-width: 1200px;
-  width: 100%;
+  width: 794px;
   margin: 0 auto 24px auto;
   background: var(--card-bg);
   border-radius: 0;
@@ -304,16 +297,24 @@ html, body {
   padding: 0;
   border: 1px solid var(--border);
   border-top: none;
+  border-top: none;
   display: flex;
   flex-direction: column;
   overflow: visible;
+}
+/* When host requests no gutters (edge-to-edge), remove auto centering */
+.page-card.no-gutters {
+  margin: 0 0 24px 0;
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
 }
 
 /* inner content area where text lives */
 .page-card .page-body {
   background: var(--editor-bg);
   min-height: 1000px;
-  padding: 48px 80px;
+  padding: 64px 96px;
   border-radius: 0;
   box-shadow: none;
   border: none;
@@ -325,12 +326,36 @@ html, body {
   font-size: 16px;
   line-height: 1.6;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  outline: none;
+  cursor: text;
+}
+
+/* If host needs tighter page body when full-bleed is requested */
+.page-card.no-gutters .page-body {
+  padding: 24px 20px;
+}
+
+/* Drag & drop overlay */
+.rte-drop-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 20000;
+  color: #111;
+  font-weight: 700;
+  background: rgba(255,255,255,0.7);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
 }
 
 /* Page size presets (px at ~96dpi) */
 .page-card.size-a4 { width: 794px; min-height: 1123px; }
 .page-card.size-letter { width: 816px; min-height: 1056px; }
 .page-card.size-a3 { width: 1122px; min-height: 1587px; }
+.page-card.size-legal { width: 816px; min-height: 1344px; }
 .page-card.size-custom { width: 900px; min-height: 1200px; }
 
 /* Ensure the card is centered and responsive */
@@ -346,10 +371,14 @@ html, body {
   .page-card.size-a3 { width: calc(100% - 48px); height: auto; }
 }
 @media (max-width: 1000px) {
-  .page-card.size-a4, .page-card.size-letter, .page-card.size-custom { width: calc(100% - 48px); height: auto; padding: 20px; }
-  .page-card { padding: 16px 20px; }
-  .page-card .page-body { padding: 14px; }
+  .page-card.size-a4, .page-card.size-letter, .page-card.size-legal, .page-card.size-custom { width: calc(100% - 48px); height: auto; }
+  .page-card .page-body { padding: 32px 48px; }
 }
+@media (max-width: 768px) {
+  .page-card { width: calc(100% - 24px) !important; }
+  .page-card .page-body { padding: 24px 32px; }
+}
+/* duplicate responsive rules removed */
 
 /* Page size selector styling */
 .page-size-select {
@@ -370,6 +399,12 @@ html, body {
   line-height: 1.2;
   margin: 24px 0 16px 0;
   color: #202124;
+
+/* nicer default header appearance when created */
+.page-card .page-body thead th {
+  background: #0f172a88; /* subtle default header tint */
+  color: #fff;
+}
   letter-spacing: -0.5px;
 }
 
@@ -402,6 +437,15 @@ html, body {
   margin: 0 0 12px 0;
   line-height: 1.6;
   color: #3c4043;
+}
+
+/* Placeholder text when editor is empty */
+.page-card .page-body[data-placeholder]:empty:before {
+  content: attr(data-placeholder);
+  color: #9aa0a6;
+  font-style: italic;
+  pointer-events: none;
+  position: absolute;
 }
 
 .page-card .page-body strong,
@@ -513,27 +557,9 @@ html, body {
 .status-bar { display: none; }
 .status-item { display: none; }
 
-/* Status Bar at Bottom Center */
-.status-bar-bottom {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  padding: 8px 24px;
-  border-radius: 20px 20px 0 0;
-  box-shadow: 0 -2px 10px rgba(0,0,0,0.08);
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  z-index: 1000;
-  font-size: 13px;
-  color: #64748b;
-  font-weight: 500;
-  border: 1px solid #e5e7eb;
-  border-bottom: none;
-}
+/* Status Bar at Bottom */
+/* status bar styles removed - package only exposes toolbar + page */
+.status-bar-bottom { display: none; }
 
 .status-bar-bottom .status-item {
   display: inline;
@@ -604,6 +630,52 @@ html, body {
   cursor: pointer;
 }
 
+.table-drag-handle {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.06);
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  z-index: 1500;
+}
+
+.table-drag-handle:active { cursor: grabbing; }
+
+.table-context-menu {
+  position: absolute;
+  right: 8px;
+  top: 36px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  z-index: 2000;
+}
+
+.table-context-menu button {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.table-context-menu button:hover { background: #f3f4f6; }
+
+.table-context-menu hr { border: none; height: 1px; background: #eef2f7; margin: 6px 0; }
+
 .table-cell-preview {
   width: 18px;
   height: 18px;
@@ -624,6 +696,13 @@ html, body {
   font-size: 12px;
   color: #6b7280;
   font-weight: 600;
+}
+
+/* selected table cell highlight */
+.page-card .page-body td.selected-cell,
+.page-card .page-body th.selected-cell {
+  outline: 2px solid rgba(59,130,246,0.9);
+  background: rgba(59,130,246,0.06);
 }
 
 /* Find and Replace Modal */
@@ -754,6 +833,25 @@ html, body {
     opacity: 1;
   }
 }
+
+/* Print / export: only show the toolbar + editor (useful for printing or exporting content)
+   This hides everything else on the page so only the editor canvas + toolbar are sent. */
+@media print {
+  body * { visibility: hidden !important; }
+  .editor-toolbar, .editor-container, .editor-container * { visibility: visible !important; }
+  .editor-container { position: absolute !important; left: 0 !important; top: 0 !important; width: 100% !important; }
+  .editor-toolbar { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; z-index: 9999 !important; }
+  /* force white canvas without page chrome */
+  .page-card, .page-card .page-body { background: #fff !important; box-shadow: none !important; border: none !important; }
+}
+
+/* Runtime export helper: add `export-only` class to <body> to hide the rest of the app
+   (useful when taking screenshots or programmatically sending only the editor DOM). */
+body.export-only * { display: none !important; }
+body.export-only .editor-toolbar,
+body.export-only .editor-container,
+body.export-only .editor-container * { display: block !important; }
+body.export-only { background: transparent !important; }
 
 @keyframes fadeInRight {
   from { 
